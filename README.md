@@ -3,17 +3,27 @@
 Prediction markets for [Terra Oracle Classic](https://terraoracle.io), on Terra Classic (columbus-5).
 
 Stake LUNC on a statement about the future. Winners keep their stake and split
-the losing pot. Markets whose outcome can be read from the chain settle against
-the chain itself, at a block height fixed before the first bet was placed.
+the losing pot. A market names a metric, a comparison, a threshold and a block
+height, all fixed before the first bet - so the answer is a matter of public
+record rather than opinion.
 
-## Why the chain decides
+> **The deployed instance is a TEST deployment.** Its `admin` and `resolver` are
+> the same address, which means one key both posts an outcome and is the only
+> party able to challenge it, and the challenge window is short. Bets are capped
+> accordingly. Treat it as a preview of the mechanism, not as a settled market.
+
+## Who says what happened
 
 A prediction market lives or dies on one question: who says what happened.
 
-Here, for a whole class of markets, nobody does. The statement names a metric,
-a comparison, a threshold and a **block height**. At settlement the value is
-read from the chain at that height and compared. The answer is not announced,
-it is computed, and anyone can recompute it later:
+Here the operator does, and the contract records it. `propose` carries the
+outcome and the reading, both supplied by the resolver; the contract stores the
+spec so the claim can be checked, but it does not read the chain itself and does
+not verify the metric, the threshold or the height. Calling that "computed by
+the chain" would be flattering and false.
+
+What the spec buys you is that the claim is checkable by anyone, against a
+value that was fixed before the first bet:
 
 ```bash
 curl -s -H "x-cosmos-block-height: 30240807" \
@@ -33,8 +43,9 @@ picked.
 ## What the contract guarantees
 
 - **The question cannot change after bets are placed.** Metric, comparator,
-  threshold and height are stored at creation and the resolver must settle
-  against them.
+  threshold and height are stored at creation, so a settlement that contradicts
+  them is visible to anyone who looks. The contract stores them; it does not
+  enforce that the posted outcome follows from them.
 - **Fees come out of the losing pot only.** A correct call always gets its
   full stake back.
 - **Payouts wait out a challenge window.** The outcome is proposed, then a
