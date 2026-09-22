@@ -77,4 +77,26 @@ pub enum ContractError {
 
     #[error("Payouts are not open yet")]
     PayoutsClosed {},
+
+    #[error("Market is not under dispute")]
+    NotDisputed {},
+
+    #[error("The arbiter's time to rule has passed")]
+    RulingTooLate {},
+
+    #[error("Market cannot be expired yet")]
+    NotExpired {},
+
+    /// Резолвер не оспаривает сам себя, арбитр не судит собственный спор.
+    #[error("The resolver and the arbiter cannot challenge")]
+    ChallengerConflict {},
+
+    #[error("Text must be between 1 and {max} characters")]
+    BadText { max: usize },
+
+    /// Параметры споров обязаны быть заданы: нулевой залог превращает
+    /// оспаривание в бесплатный спам, нулевое окно арбитра - в мгновенный
+    /// void, а нулевой grace позволил бы аннулировать рынок раньше резолвера.
+    #[error("Dispute settings are missing or too small: {what}")]
+    BadDisputeConfig { what: String },
 }

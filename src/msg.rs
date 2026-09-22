@@ -24,6 +24,12 @@ pub struct InstantiateMsg {
     pub boost_per_week: u64,
     pub challenge_secs: u64,
     pub bet_cutoff_secs: u64,
+
+    /// Не задан - споры решает admin.
+    pub arbiter: Option<String>,
+    pub challenge_bond: Uint128,
+    pub arbiter_secs: u64,
+    pub resolve_grace_secs: u64,
 }
 
 #[cw_serde]
@@ -56,9 +62,32 @@ pub enum ExecuteMsg {
         reading: String,
     },
 
-    /// Отменить объявленный исход в окне оспаривания. Только админ.
-    /// Рынок возвращается в `Locked`, и резолвер объявляет заново.
-    Challenge { market_id: u64, reason: String },
+    /// Оспорить объявленный исход в окне оспаривания. Может кто угодно,
+    /// кроме резолвера и арбитра, - с залогом `challenge_bond`. `reading` -
+    /// что, по мнению оспорившего, показывает цепочка на самом деле.
+    /// Рынок уходит в `Disputed` и ждёт решения арбитра.
+    Challenge { market_id: u64, reading: String },
+
+    /// Решение по спору. Только арбитр, только в течение `arbiter_secs`.
+    ///
+    /// `outcome: None` - рынок аннулируется, ставки и залог оспорившего
+    /// возвращаются; `bad_spec` решает судьбу залога создателя.
+    /// Совпадает с объявленным - оспоривший ошибся, его залог уходит в
+    /// фонд доплат. Отличается - оспоривший прав: исход меняется, ему
+    /// возвращается залог и достаётся протокольная доля рынка.
+    /// Решение окончательное: второго круга нет.
+    Rule {
+        market_id: u64,
+        outcome: Option<bool>,
+        bad_spec: bool,
+        ruling: String,
+    },
+
+    /// Аннулировать зависший рынок. Может кто угодно. Срабатывает, если
+    /// исход не объявлен за `resolve_grace_secs` после срока, или если
+    /// арбитр не решил спор за `arbiter_secs`. Худший исход при потерянном
+    /// ключе - возврат денег, а не их заморозка.
+    Expire { market_id: u64 },
 
     /// Закрыть рынок после окна оспаривания: развести комиссии, вернуть
     /// залог создателю, открыть выплаты. Permissionless - вызвать может
@@ -93,6 +122,10 @@ pub enum ExecuteMsg {
         challenge_secs: Option<u64>,
         bet_cutoff_secs: Option<u64>,
         paused: Option<bool>,
+        arbiter: Option<String>,
+        challenge_bond: Option<Uint128>,
+        arbiter_secs: Option<u64>,
+        resolve_grace_secs: Option<u64>,
     },
 }
 
@@ -146,8 +179,15 @@ pub struct BoostResponse {
     pub per_week: u64,
 }
 
+/// Миграция 0.2.0 обязана задать параметры споров: `check_config` не
+/// пропустит нули, и миграция без них откатится целиком.
 #[cw_serde]
-pub struct MigrateMsg {}
+pub struct MigrateMsg {
+    pub arbiter: Option<String>,
+    pub challenge_bond: Option<Uint128>,
+    pub arbiter_secs: Option<u64>,
+    pub resolve_grace_secs: Option<u64>,
+}
 
 /// Доли считаются в базисных пунктах от проигравшего банка.
 pub fn bps(amount: Uint128, bps: u64) -> Uint128 {
