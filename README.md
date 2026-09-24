@@ -4,7 +4,7 @@ Prediction markets for [Terra Oracle Classic](https://terraoracle.io), on Terra 
 
 Stake LUNC on a statement about the future. Winners keep their stake and split
 the losing pot. A market names a metric, a comparison, a threshold and a block
-height, all fixed before the first bet - so the answer is a matter of public
+height, all fixed before the first prediction - so the answer is a matter of public
 record rather than opinion.
 
 > **The deployed instance is a TEST deployment.** Its `admin` and `resolver` are
@@ -23,7 +23,7 @@ not verify the metric, the threshold or the height. Calling that "computed by
 the chain" would be flattering and false.
 
 What the spec buys you is that the claim is checkable by anyone, against a
-value that was fixed before the first bet:
+value that was fixed before the first prediction:
 
 ```bash
 curl -s -H "x-cosmos-block-height: 30240807" \
@@ -141,7 +141,7 @@ it reach the same answer.
 | Execute | Who | Notes |
 |---|---|---|
 | `create` | anyone | bond attached; bets must close well before resolution |
-| `bet` | anyone | funds attached; repeat bets add to the existing one |
+| `predict` | anyone | funds attached; repeat predictions add to the existing one. Called `bet` before 0.2.1, and `bet` is still accepted |
 | `propose` | resolver | after `resolve_after`; carries the reading |
 | `challenge` | **anyone** except resolver and arbiter | inside the window; `challenge_bond` attached; market goes to `disputed` |
 | `rule` | arbiter | within `arbiter_secs`; final, there is no second round |
@@ -175,7 +175,7 @@ docker run --rm -v "$(pwd)":/code \
 Compare `artifacts/checksums.txt` with what the chain reports for the code id.
 
 ```bash
-cargo test   # 39 tests: economics to the last unit, solvency, disputes, migration
+cargo test   # 40 tests: economics to the last unit, solvency, disputes, migration
 ```
 
 ## Deployments

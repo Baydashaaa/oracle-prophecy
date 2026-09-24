@@ -1,6 +1,6 @@
 [package]
 name = "oracle-prophecy"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Terra Oracle Classic"]
 edition = "2021"
 license = "Apache-2.0"

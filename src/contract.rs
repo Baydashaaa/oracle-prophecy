@@ -148,7 +148,7 @@ pub fn execute(
             resolve_after,
             promoted,
         ),
-        ExecuteMsg::Bet { market_id, side } => exec_bet(deps, env, info, market_id, side),
+        ExecuteMsg::Predict { market_id, side } => exec_bet(deps, env, info, market_id, side),
         ExecuteMsg::Propose {
             market_id,
             outcome,

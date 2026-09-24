@@ -157,8 +157,8 @@ fn ready_market(app: &mut App, c: &Addr) {
         BOND,
     )
     .unwrap();
-    exec(app, c, ALICE, &ExecuteMsg::Bet { market_id: 1, side: true }, 400).unwrap();
-    exec(app, c, BOB, &ExecuteMsg::Bet { market_id: 1, side: false }, 600).unwrap();
+    exec(app, c, ALICE, &ExecuteMsg::Predict { market_id: 1, side: true }, 400).unwrap();
+    exec(app, c, BOB, &ExecuteMsg::Predict { market_id: 1, side: false }, 600).unwrap();
     advance(app, 1_000 + CUTOFF + 2);
 }
 
@@ -588,4 +588,41 @@ fn storage_written_by_the_old_code_still_reads() {
     assert_eq!(m.spec.unit, None);
     assert_eq!(m.void_reason, None);
     assert_eq!(m.challenge_bond, Uint128::zero());
+}
+
+// ── имя сообщения ───────────────────────────────────────────────────────────
+
+/// С 0.2.1 сообщение называется `predict`, но старое `bet` принимается как
+/// синоним: кошельки и скрипты под прежнюю версию не должны сломаться.
+#[test]
+fn predict_is_the_name_and_bet_still_works() {
+    let mut a = app();
+    let c = setup(&mut a);
+    let close = now(&a) + 1_000;
+    exec(&mut a, &c, CREATOR, &ExecuteMsg::Create {
+        question: "q".into(), category: "economy".into(),
+        spec: Spec { metric: Some("total_supply".into()), param: None, comparator: Some("lt".into()),
+            threshold: Some("1".into()), height: Some(1), criterion: "c".into(), unit: None },
+        bets_close_at: close, resolve_after: close + CUTOFF + 1, promoted: false,
+    }, BOND).unwrap();
+
+    // Новое имя.
+    let new_json = serde_json_like("predict", true);
+    a.execute(Addr::unchecked(ALICE), cosmwasm_std::WasmMsg::Execute {
+        contract_addr: c.to_string(), msg: new_json, funds: coins(100, DENOM),
+    }.into()).unwrap();
+    // Старое имя, тот же рынок.
+    let old_json = serde_json_like("bet", false);
+    a.execute(Addr::unchecked(BOB), cosmwasm_std::WasmMsg::Execute {
+        contract_addr: c.to_string(), msg: old_json, funds: coins(200, DENOM),
+    }.into()).unwrap();
+
+    let m = market(&a, &c);
+    assert_eq!(m.pot_yes, Uint128::new(100));
+    assert_eq!(m.pot_no, Uint128::new(200));
+}
+
+/// Сообщение в том виде, в каком его шлёт кошелёк: {"<имя>": {...}}.
+fn serde_json_like(name: &str, side: bool) -> cosmwasm_std::Binary {
+    cosmwasm_std::Binary::from(format!(r#"{{"{name}":{{"market_id":1,"side":{side}}}}}"#).into_bytes())
 }

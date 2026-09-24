@@ -123,7 +123,7 @@ fn bet(app: &mut App, c: &Addr, who: &str, side: bool, amount: u128) {
     app.execute_contract(
         Addr::unchecked(who),
         c.clone(),
-        &ExecuteMsg::Bet {
+        &ExecuteMsg::Predict {
             market_id: 1,
             side,
         },
