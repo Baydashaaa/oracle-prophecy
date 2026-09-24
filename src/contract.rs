@@ -18,6 +18,12 @@ use crate::state::{
 
 const WEEK: u64 = 604_800;
 const MAX_LIMIT: u32 = 50;
+/// Потолок для показаний и решений. Строки хранятся в каждом рынке, и
+/// неограниченный текст - это газ на каждом чтении списка.
+const MAX_TEXT: usize = 500;
+/// Меньше суток нельзя: иначе `Expire` мог бы аннулировать рынок, пока
+/// резолвер просто не успел объявить исход.
+const MIN_GRACE: u64 = 86_400;
 
 // ── instantiate ─────────────────────────────────────────────────────────────
 
@@ -50,8 +56,16 @@ pub fn instantiate(
         challenge_secs: msg.challenge_secs,
         bet_cutoff_secs: msg.bet_cutoff_secs,
         paused: false,
+        arbiter: msg
+            .arbiter
+            .map(|a| deps.api.addr_validate(&a))
+            .transpose()?,
+        challenge_bond: msg.challenge_bond,
+        arbiter_secs: msg.arbiter_secs,
+        resolve_grace_secs: msg.resolve_grace_secs,
     };
     check_fees(&cfg)?;
+    check_disputes(&cfg)?;
 
     CONFIG.save(deps.storage, &cfg)?;
     NEXT_ID.save(deps.storage, &1u64)?;
@@ -70,6 +84,38 @@ fn check_fees(cfg: &Config) -> Result<(), ContractError> {
     // Ставка на обе стороны своего рынка должна оставаться убыточной.
     if cfg.creator_bps >= cfg.protocol_bps {
         return Err(ContractError::CreatorFeeTooHigh {});
+    }
+    Ok(())
+}
+
+/// Параметры споров. Проверяются при создании, правке конфига и миграции,
+/// поэтому сохранить нули не получится ни одним из путей.
+fn check_disputes(cfg: &Config) -> Result<(), ContractError> {
+    let bad = |what: &str| {
+        Err(ContractError::BadDisputeConfig {
+            what: what.to_string(),
+        })
+    };
+    if cfg.challenge_bond.is_zero() {
+        return bad("challenge_bond");
+    }
+    if cfg.arbiter_secs == 0 {
+        return bad("arbiter_secs");
+    }
+    if cfg.resolve_grace_secs < MIN_GRACE {
+        return bad("resolve_grace_secs");
+    }
+    Ok(())
+}
+
+/// Кто решает споры. Пока арбитр не назначен - admin.
+fn arbiter(cfg: &Config) -> Addr {
+    cfg.arbiter.clone().unwrap_or_else(|| cfg.admin.clone())
+}
+
+fn check_text(t: &str) -> Result<(), ContractError> {
+    if t.trim().is_empty() || t.len() > MAX_TEXT {
+        return Err(ContractError::BadText { max: MAX_TEXT });
     }
     Ok(())
 }
@@ -108,9 +154,16 @@ pub fn execute(
             outcome,
             reading,
         } => exec_propose(deps, env, info, market_id, outcome, reading),
-        ExecuteMsg::Challenge { market_id, reason } => {
-            exec_challenge(deps, env, info, market_id, reason)
+        ExecuteMsg::Challenge { market_id, reading } => {
+            exec_challenge(deps, env, info, market_id, reading)
         }
+        ExecuteMsg::Rule {
+            market_id,
+            outcome,
+            bad_spec,
+            ruling,
+        } => exec_rule(deps, env, info, market_id, outcome, bad_spec, ruling),
+        ExecuteMsg::Expire { market_id } => exec_expire(deps, env, market_id),
         ExecuteMsg::Settle { market_id } => exec_settle(deps, env, market_id),
         ExecuteMsg::Void {
             market_id,
@@ -226,6 +279,13 @@ fn exec_create(
         bond: cfg.creation_bond,
         bond_returned: false,
         promoted,
+        disputed_at: None,
+        challenger: None,
+        challenge_reading: None,
+        challenge_bond: Uint128::zero(),
+        ruling: None,
+        void_reason: None,
+        bad_spec: false,
     };
     MARKETS.save(deps.storage, id, &market)?;
 
@@ -358,39 +418,135 @@ fn exec_challenge(
     env: Env,
     info: MessageInfo,
     market_id: u64,
-    reason: String,
+    reading: String,
 ) -> Result<Response, ContractError> {
     let cfg = CONFIG.load(deps.storage)?;
-    if info.sender != cfg.admin {
-        return Err(ContractError::Unauthorized {});
+    // Резолвер не оспаривает сам себя, арбитр не судит собственный спор.
+    if info.sender == cfg.resolver || info.sender == arbiter(&cfg) {
+        return Err(ContractError::ChallengerConflict {});
     }
+    check_text(&reading)?;
     let mut m = MARKETS
         .may_load(deps.storage, market_id)?
         .ok_or(ContractError::NoMarket { id: market_id })?;
     if m.status != Status::Proposed {
         return Err(ContractError::NotProposed {});
     }
-    if env.block.time.seconds() >= m.proposed_at.unwrap_or_default() + cfg.challenge_secs {
+    let now = env.block.time.seconds();
+    if now >= m.proposed_at.unwrap_or_default() + cfg.challenge_secs {
         return Err(ContractError::ChallengeClosed {});
     }
+    let paid = sent(&info, &cfg.denom);
+    if paid != cfg.challenge_bond {
+        return Err(ContractError::WrongPayment {
+            expected: cfg.challenge_bond,
+            denom: cfg.denom,
+        });
+    }
 
-    // Возврат в Locked, а не аннулирование: ошибка резолвера не должна
-    // отменять рынок, он просто объявляет заново.
-    m.status = Status::Locked;
-    m.outcome = None;
-    m.reading = None;
-    m.proposed_at = None;
+    // Объявленный исход не стирается: арбитру нужно видеть, что утверждал
+    // резолвер, а после спора - всем остальным.
+    m.status = Status::Disputed;
+    m.disputed_at = Some(now);
+    m.challenger = Some(info.sender.clone());
+    m.challenge_reading = Some(reading.clone());
+    m.challenge_bond = paid;
     MARKETS.save(deps.storage, market_id, &m)?;
 
     Ok(Response::new()
         .add_attribute("action", "challenge")
         .add_attribute("market_id", market_id.to_string())
-        .add_attribute("reason", reason))
+        .add_attribute("challenger", info.sender)
+        .add_attribute("reading", reading))
+}
+
+fn exec_rule(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    market_id: u64,
+    outcome: Option<bool>,
+    bad_spec: bool,
+    ruling: String,
+) -> Result<Response, ContractError> {
+    let cfg = CONFIG.load(deps.storage)?;
+    if info.sender != arbiter(&cfg) {
+        return Err(ContractError::Unauthorized {});
+    }
+    check_text(&ruling)?;
+    let mut m = MARKETS
+        .may_load(deps.storage, market_id)?
+        .ok_or(ContractError::NoMarket { id: market_id })?;
+    if m.status != Status::Disputed {
+        return Err(ContractError::NotDisputed {});
+    }
+    // Опоздавшее решение не принимается: после окна рынок уходит в void
+    // через Expire, и арбитр не может этого перехватить.
+    if env.block.time.seconds() >= m.disputed_at.unwrap_or_default() + cfg.arbiter_secs {
+        return Err(ContractError::RulingTooLate {});
+    }
+    m.ruling = Some(ruling);
+    let proposed = m.outcome;
+
+    match outcome {
+        // Исход установить нельзя: аннулирование. Залог оспорившего
+        // возвращается внутри void_market - он был прав, что объявление
+        // не годится, но награды нет, потому что делить нечего.
+        None => void_market(deps, m, bad_spec, "voided by the arbiter".to_string()),
+
+        // Оспоривший ошибся. Его залог уходит в фонд доплат - будущим
+        // игрокам, а не резолверу: иначе у того был бы мотив нарываться
+        // на споры.
+        Some(o) if Some(o) == proposed => {
+            let mut fund = BOOST_FUND.load(deps.storage)?;
+            fund += m.challenge_bond;
+            BOOST_FUND.save(deps.storage, &fund)?;
+            m.challenge_bond = Uint128::zero();
+            settle_market(deps, m, None)
+        }
+
+        // Оспоривший прав: исход меняется, ему достаётся протокольная доля.
+        // Ошибку оператора оплачивает доход оператора.
+        Some(o) => {
+            m.outcome = Some(o);
+            let who = m.challenger.clone();
+            settle_market(deps, m, who)
+        }
+    }
+}
+
+fn exec_expire(deps: DepsMut, env: Env, market_id: u64) -> Result<Response, ContractError> {
+    let cfg = CONFIG.load(deps.storage)?;
+    let m = MARKETS
+        .may_load(deps.storage, market_id)?
+        .ok_or(ContractError::NoMarket { id: market_id })?;
+    let now = env.block.time.seconds();
+
+    match m.status {
+        Status::Open | Status::Locked => {
+            if now < m.resolve_after + cfg.resolve_grace_secs {
+                return Err(ContractError::NotExpired {});
+            }
+            void_market(
+                deps,
+                m,
+                false,
+                "no outcome was posted within the grace period".to_string(),
+            )
+        }
+        Status::Disputed => {
+            if now < m.disputed_at.unwrap_or_default() + cfg.arbiter_secs {
+                return Err(ContractError::NotExpired {});
+            }
+            void_market(deps, m, false, "the arbiter did not rule in time".to_string())
+        }
+        _ => Err(ContractError::NotExpired {}),
+    }
 }
 
 fn exec_settle(deps: DepsMut, env: Env, market_id: u64) -> Result<Response, ContractError> {
     let cfg = CONFIG.load(deps.storage)?;
-    let mut m = MARKETS
+    let m = MARKETS
         .may_load(deps.storage, market_id)?
         .ok_or(ContractError::NoMarket { id: market_id })?;
     if m.status != Status::Proposed {
@@ -399,6 +555,19 @@ fn exec_settle(deps: DepsMut, env: Env, market_id: u64) -> Result<Response, Cont
     if env.block.time.seconds() < m.proposed_at.unwrap_or_default() + cfg.challenge_secs {
         return Err(ContractError::ChallengeOpen {});
     }
+    settle_market(deps, m, None)
+}
+
+/// Общий расчёт: после окна без спора и после решения арбитра. `reward_to`
+/// задан, когда оспоривший оказался прав: протокольная доля уходит ему
+/// вместо розыгрыша и казны, вместе с возвратом его залога.
+fn settle_market(
+    deps: DepsMut,
+    mut m: Market,
+    reward_to: Option<Addr>,
+) -> Result<Response, ContractError> {
+    let cfg = CONFIG.load(deps.storage)?;
+    let market_id = m.id;
 
     // Односторонний рынок делить не между кем. Возвращаем всё: доплата
     // казны уходит обратно в фонд, залог создателя возвращается - вопрос
@@ -422,17 +591,30 @@ fn exec_settle(deps: DepsMut, env: Env, market_id: u64) -> Result<Response, Cont
     BOOST_FUND.save(deps.storage, &fund)?;
 
     let mut msgs: Vec<BankMsg> = vec![];
-    if !to_draw.is_zero() {
-        msgs.push(BankMsg::Send {
-            to_address: cfg.draw_pool.to_string(),
-            amount: coins(to_draw.u128(), &cfg.denom),
-        });
-    }
-    if !to_treasury.is_zero() {
-        msgs.push(BankMsg::Send {
-            to_address: cfg.treasury.to_string(),
-            amount: coins(to_treasury.u128(), &cfg.denom),
-        });
+    let mut to_challenger = Uint128::zero();
+    if let Some(who) = &reward_to {
+        // Оспоривший прав: вся протокольная доля плюс его залог.
+        to_challenger = protocol + m.challenge_bond;
+        m.challenge_bond = Uint128::zero();
+        if !to_challenger.is_zero() {
+            msgs.push(BankMsg::Send {
+                to_address: who.to_string(),
+                amount: coins(to_challenger.u128(), &cfg.denom),
+            });
+        }
+    } else {
+        if !to_draw.is_zero() {
+            msgs.push(BankMsg::Send {
+                to_address: cfg.draw_pool.to_string(),
+                amount: coins(to_draw.u128(), &cfg.denom),
+            });
+        }
+        if !to_treasury.is_zero() {
+            msgs.push(BankMsg::Send {
+                to_address: cfg.treasury.to_string(),
+                amount: coins(to_treasury.u128(), &cfg.denom),
+            });
+        }
     }
     if !creator.is_zero() {
         msgs.push(BankMsg::Send {
@@ -458,8 +640,9 @@ fn exec_settle(deps: DepsMut, env: Env, market_id: u64) -> Result<Response, Cont
         .add_attribute("action", "settle")
         .add_attribute("market_id", market_id.to_string())
         .add_attribute("losing_pot", losing)
-        .add_attribute("to_draw", to_draw)
-        .add_attribute("to_treasury", to_treasury)
+        .add_attribute("to_draw", if reward_to.is_some() { Uint128::zero() } else { to_draw })
+        .add_attribute("to_treasury", if reward_to.is_some() { Uint128::zero() } else { to_treasury })
+        .add_attribute("to_challenger", to_challenger)
         .add_attribute("to_creator", creator))
 }
 
@@ -497,8 +680,10 @@ fn void_market(
     let mut fund = BOOST_FUND.load(deps.storage)?;
     fund += m.boost;
     // Залог сгорает только за непроверяемую формулировку. Отказ узла или
-    // отсутствие второй стороны - не вина создателя.
-    if bad_spec {
+    // отсутствие второй стороны - не вина создателя. Проверка bond_returned
+    // обязательна: в void_market теперь больше входов, и залог не должен
+    // уйти в фонд после того, как его уже вернули.
+    if bad_spec && !m.bond_returned {
         fund += m.bond;
         m.bond_returned = true;
     }
@@ -506,6 +691,18 @@ fn void_market(
     m.boost = Uint128::zero();
 
     let mut msgs: Vec<BankMsg> = vec![];
+    // Залог оспорившего возвращается при любом аннулировании: арбитр
+    // признал объявление негодным или промолчал - оспоривший не виноват
+    // ни в том, ни в другом.
+    if !m.challenge_bond.is_zero() {
+        if let Some(who) = &m.challenger {
+            msgs.push(BankMsg::Send {
+                to_address: who.to_string(),
+                amount: coins(m.challenge_bond.u128(), &cfg.denom),
+            });
+        }
+        m.challenge_bond = Uint128::zero();
+    }
     if !bad_spec && !m.bond.is_zero() && !m.bond_returned {
         msgs.push(BankMsg::Send {
             to_address: m.creator.to_string(),
@@ -515,6 +712,8 @@ fn void_market(
     }
 
     m.status = Status::Void;
+    m.void_reason = Some(reason.clone());
+    m.bad_spec = bad_spec;
     let id = m.id;
     MARKETS.save(deps.storage, id, &m)?;
 
@@ -639,6 +838,10 @@ fn exec_update_config(
         challenge_secs,
         bet_cutoff_secs,
         paused,
+        arbiter,
+        challenge_bond,
+        arbiter_secs,
+        resolve_grace_secs,
     } = msg
     {
         if let Some(v) = admin {
@@ -689,9 +892,22 @@ fn exec_update_config(
         if let Some(v) = paused {
             cfg.paused = v;
         }
+        if let Some(v) = arbiter {
+            cfg.arbiter = Some(deps.api.addr_validate(&v)?);
+        }
+        if let Some(v) = challenge_bond {
+            cfg.challenge_bond = v;
+        }
+        if let Some(v) = arbiter_secs {
+            cfg.arbiter_secs = v;
+        }
+        if let Some(v) = resolve_grace_secs {
+            cfg.resolve_grace_secs = v;
+        }
     }
     // Проверка та же, что при создании: правкой конфига её не обойти.
     check_fees(&cfg)?;
+    check_disputes(&cfg)?;
     CONFIG.save(deps.storage, &cfg)?;
 
     Ok(Response::new().add_attribute("action", "update_config"))
@@ -783,6 +999,25 @@ fn query_position(deps: Deps, market_id: u64, address: String) -> StdResult<Posi
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
-pub fn migrate(_deps: DepsMut, _env: Env, _msg: MigrateMsg) -> Result<Response, ContractError> {
+pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> Result<Response, ContractError> {
+    // Старый конфиг читается благодаря serde(default) на новых полях;
+    // здесь им назначаются настоящие значения. check_disputes не пропустит
+    // миграцию без них - она откатится целиком, и контракт останется
+    // на прежнем коде.
+    let mut cfg = CONFIG.load(deps.storage)?;
+    if let Some(v) = msg.arbiter {
+        cfg.arbiter = Some(deps.api.addr_validate(&v)?);
+    }
+    if let Some(v) = msg.challenge_bond {
+        cfg.challenge_bond = v;
+    }
+    if let Some(v) = msg.arbiter_secs {
+        cfg.arbiter_secs = v;
+    }
+    if let Some(v) = msg.resolve_grace_secs {
+        cfg.resolve_grace_secs = v;
+    }
+    check_disputes(&cfg)?;
+    CONFIG.save(deps.storage, &cfg)?;
     Ok(Response::new().add_attribute("action", "migrate"))
 }

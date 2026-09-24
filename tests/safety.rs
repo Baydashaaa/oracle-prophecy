@@ -66,6 +66,10 @@ fn setup(app: &mut App) -> Addr {
             boost_per_week: 2,
             challenge_secs: CHALLENGE,
             bet_cutoff_secs: CUTOFF,
+            arbiter: Some("arbiter".into()),
+            challenge_bond: Uint128::new(50),
+            arbiter_secs: 7_200,
+            resolve_grace_secs: 604_800,
         },
         &[],
         "oracle-prophecy",
@@ -82,6 +86,7 @@ fn spec() -> Spec {
         threshold: Some("6000000000000".into()),
         height: Some(30_400_000),
         criterion: "bank supply of uluna at the given height".into(),
+        unit: None,
     }
 }
 
@@ -384,6 +389,10 @@ fn strangers_can_neither_void_nor_reconfigure() {
                 challenge_secs: None,
                 bet_cutoff_secs: None,
                 paused: None,
+                arbiter: None,
+                challenge_bond: None,
+                arbiter_secs: None,
+                resolve_grace_secs: None,
             },
             &[]
         )

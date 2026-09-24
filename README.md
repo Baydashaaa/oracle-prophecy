@@ -48,14 +48,35 @@ picked.
   enforce that the posted outcome follows from them.
 - **Fees come out of the losing pot only.** A correct call always gets its
   full stake back.
-- **Payouts wait out a challenge window.** The outcome is proposed, then a
-  fixed period passes before money can move.
+- **Payouts wait out a challenge window, and anyone can challenge.** The
+  outcome is proposed, then a fixed period passes before money can move. Inside
+  it, any wallet except the resolver and the arbiter can dispute the reading by
+  posting a bond. A challenger who was right gets the bond back plus the
+  market's protocol share; one who was wrong loses the bond to the boost fund,
+  not to the resolver.
+- **Silence voids, it never wins.** If the arbiter does not rule in time, the
+  disputed market voids and everyone is refunded, the challenger included. If
+  the resolver never posts an outcome, anyone can void the market a week after
+  it was due. A lost key means a refund, not frozen money.
 - **A failed reading refunds everyone.** If the metric cannot be read, or
   everybody backed the same side, the market voids and stakes come back whole.
 - **Self-dealing loses money.** The creator fee is required to stay below the
   protocol fee, so betting both sides of your own market is a guaranteed loss.
 - **Rounding always favours the contract.** Every division floors, so the
   contract can never promise more than it holds.
+
+## The arbiter, plainly
+
+The arbiter can overturn a posted outcome. That power is what makes a
+challenge worth anything, and it is also a real one: an arbiter acting alone
+could side with a friendly "challenger" and redirect a market's protocol share.
+What limits it is who holds the key, not the code. The arbiter is meant to be a
+2-of-3 multisig with at least one key outside the operator's hands; until it is,
+the docs say so.
+
+A multisig member who has a stake in a disputed market should not vote on it.
+The contract cannot check that. It is an agreement, and it is written down here
+so it can be held to.
 
 ## The money
 
@@ -122,7 +143,9 @@ it reach the same answer.
 | `create` | anyone | bond attached; bets must close well before resolution |
 | `bet` | anyone | funds attached; repeat bets add to the existing one |
 | `propose` | resolver | after `resolve_after`; carries the reading |
-| `challenge` | admin | inside the window; sends the market back for a second reading |
+| `challenge` | **anyone** except resolver and arbiter | inside the window; `challenge_bond` attached; market goes to `disputed` |
+| `rule` | arbiter | within `arbiter_secs`; final, there is no second round |
+| `expire` | **anyone** | voids a market nobody resolved within `resolve_grace_secs`, or a dispute the arbiter left undecided |
 | `settle` | **anyone** | after the window; pays fees, returns the bond, opens payouts |
 | `void` | admin or resolver | `bad_spec` decides whether the bond is burned |
 | `claim` | anyone | winnings, or the refund on a voided market |
@@ -152,7 +175,7 @@ docker run --rm -v "$(pwd)":/code \
 Compare `artifacts/checksums.txt` with what the chain reports for the code id.
 
 ```bash
-cargo test   # 24 tests: economics to the last unit, solvency, edge cases
+cargo test   # 39 tests: economics to the last unit, solvency, disputes, migration
 ```
 
 ## Deployments

@@ -67,6 +67,10 @@ fn setup(app: &mut App) -> Addr {
             boost_per_week: 2,
             challenge_secs: CHALLENGE,
             bet_cutoff_secs: CUTOFF,
+            arbiter: Some("arbiter".into()),
+            challenge_bond: Uint128::new(50),
+            arbiter_secs: 7_200,
+            resolve_grace_secs: 604_800,
         },
         &[],
         "oracle-prophecy",
@@ -83,6 +87,7 @@ fn spec() -> Spec {
         threshold: Some("0.000060000000000000".into()),
         height: Some(30_312_400),
         criterion: "oracle module exchange rate at the given height".into(),
+        unit: None,
     }
 }
 
@@ -296,58 +301,6 @@ fn only_resolver_and_only_after_the_time() {
     assert_eq!(m.status, Status::Proposed);
     assert_eq!(m.outcome, Some(true));
     assert!(m.reading.unwrap().contains("30312400"), "чтение сохранено");
-}
-
-#[test]
-fn challenge_returns_the_market_for_a_second_reading() {
-    let mut a = app();
-    let c = setup(&mut a);
-    create(&mut a, &c, false);
-    bet(&mut a, &c, ALICE, true, 100).unwrap();
-    bet(&mut a, &c, BOB, false, 100).unwrap();
-    advance(&mut a, 1_000 + CUTOFF + 2);
-
-    a.execute_contract(
-        Addr::unchecked(RESOLVER),
-        c.clone(),
-        &ExecuteMsg::Propose {
-            market_id: 1,
-            outcome: true,
-            reading: "wrong".into(),
-        },
-        &[],
-    )
-    .unwrap();
-
-    a.execute_contract(
-        Addr::unchecked(ADMIN),
-        c.clone(),
-        &ExecuteMsg::Challenge {
-            market_id: 1,
-            reason: "read at the wrong height".into(),
-        },
-        &[],
-    )
-    .unwrap();
-
-    // Ошибка резолвера не отменяет рынок - он объявляет заново.
-    let m = market(&a, &c);
-    assert_eq!(m.status, Status::Locked);
-    assert_eq!(m.outcome, None);
-
-    advance(&mut a, CHALLENGE + 1);
-    a.execute_contract(
-        Addr::unchecked(RESOLVER),
-        c.clone(),
-        &ExecuteMsg::Propose {
-            market_id: 1,
-            outcome: false,
-            reading: "rate 0.0000501 at height 30312400".into(),
-        },
-        &[],
-    )
-    .unwrap();
-    assert_eq!(market(&a, &c).outcome, Some(false));
 }
 
 // ── расчёт и выплаты ────────────────────────────────────────────────────────
@@ -633,6 +586,10 @@ fn creator_fee_cannot_reach_the_protocol_fee() {
                 challenge_secs: None,
                 bet_cutoff_secs: None,
                 paused: None,
+                arbiter: None,
+                challenge_bond: None,
+                arbiter_secs: None,
+                resolve_grace_secs: None,
             },
             &[],
         )
@@ -791,6 +748,10 @@ fn paused_contract_takes_no_money() {
             challenge_secs: None,
             bet_cutoff_secs: None,
             paused: Some(true),
+            arbiter: None,
+            challenge_bond: None,
+            arbiter_secs: None,
+            resolve_grace_secs: None,
         },
         &[],
     )
