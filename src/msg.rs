@@ -182,6 +182,9 @@ pub struct BoostResponse {
     pub per_market: Uint128,
     pub used_this_week: u64,
     pub per_week: u64,
+    /// Когда кончится текущая неделя доплат. `None` - недели нет: следующее
+    /// создание рынка начнёт новую.
+    pub week_ends_at: Option<u64>,
 }
 
 /// Миграция 0.2.0 обязана задать параметры споров: `check_config` не

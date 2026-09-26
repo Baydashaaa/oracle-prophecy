@@ -919,7 +919,7 @@ fn exec_update_config(
 // ── query ───────────────────────────────────────────────────────────────────
 
 #[cfg_attr(not(feature = "library"), entry_point)]
-pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
+pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
         QueryMsg::Config {} => to_json_binary(&CONFIG.load(deps.storage)?),
         QueryMsg::Market { market_id } => to_json_binary(&MARKETS.load(deps.storage, market_id)?),
@@ -933,12 +933,18 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
         }
         QueryMsg::Boost {} => {
             let cfg = CONFIG.load(deps.storage)?;
-            let (_, used) = BOOST_WEEK.load(deps.storage)?;
+            // Счётчик недели обнуляет создание рынка, а не время: после конца
+            // недели в хранилище лежит старое число, пока кто-нибудь не создаст
+            // рынок. Запрос показывает то, что увидит следующее создание, -
+            // иначе сайт пишет "квота выбрана", когда доплата уже доступна.
+            let (week_start, used) = BOOST_WEEK.load(deps.storage)?;
+            let running = env.block.time.seconds() < week_start + WEEK;
             to_json_binary(&BoostResponse {
                 fund: BOOST_FUND.load(deps.storage)?,
                 per_market: cfg.boost_amount,
-                used_this_week: used,
+                used_this_week: if running { used } else { 0 },
                 per_week: cfg.boost_per_week,
+                week_ends_at: if running { Some(week_start + WEEK) } else { None },
             })
         }
     }

@@ -178,7 +178,7 @@ docker run --rm -v "$(pwd)":/code \
 Compare `artifacts/checksums.txt` with what the chain reports for the code id.
 
 ```bash
-cargo test   # 42 tests: economics to the last unit, solvency, disputes, migration
+cargo test   # 43 tests: economics to the last unit, solvency, disputes, migration
 ```
 
 ## Deployments

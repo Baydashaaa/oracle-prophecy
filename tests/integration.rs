@@ -795,6 +795,35 @@ fn farming_the_boost_stays_unprofitable() {
     assert_eq!(start - end, 107);
 }
 
+#[test]
+fn boost_query_sees_the_new_week() {
+    let mut a = app();
+    let c = setup(&mut a);
+    a.execute_contract(
+        Addr::unchecked(ADMIN),
+        c.clone(),
+        &ExecuteMsg::FundBoost {},
+        &coins(1_000, DENOM),
+    )
+    .unwrap();
+    create(&mut a, &c, true);
+
+    let q = |a: &App| -> BoostResponse {
+        a.wrap().query_wasm_smart(c.clone(), &QueryMsg::Boost {}).unwrap()
+    };
+    let started = now(&a);
+    let b = q(&a);
+    assert_eq!(b.used_this_week, 1);
+    assert_eq!(b.week_ends_at, Some(started + 604_800));
+
+    // Неделя кончилась, рынков с тех пор никто не создавал: в хранилище
+    // по-прежнему 1, но запрос обязан показать то, что увидит создание.
+    advance(&mut a, 604_801);
+    let b = q(&a);
+    assert_eq!(b.used_this_week, 0, "новая неделя - квота свободна");
+    assert_eq!(b.week_ends_at, None);
+}
+
 // ── конфигурация ────────────────────────────────────────────────────────────
 
 #[test]
