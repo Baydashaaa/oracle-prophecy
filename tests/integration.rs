@@ -627,9 +627,9 @@ fn boost_is_capped_per_week() {
                 spec: spec(),
                 bets_close_at: close,
                 resolve_after: close + CUTOFF + 1,
-                promoted: false,
+                promoted: true,
             },
-            &coins(BOND, DENOM),
+            &coins(BOND + PROMO, DENOM),
         )
         .unwrap();
     }
@@ -657,9 +657,9 @@ fn boost_is_capped_per_week() {
             spec: spec(),
             bets_close_at: close,
             resolve_after: close + CUTOFF + 1,
-            promoted: false,
+            promoted: true,
         },
-        &coins(BOND, DENOM),
+        &coins(BOND + PROMO, DENOM),
     )
     .unwrap();
     let m4: Market = a
@@ -680,7 +680,7 @@ fn boost_joins_the_losing_pot() {
         &coins(1_000, DENOM),
     )
     .unwrap();
-    create(&mut a, &c, false);
+    create(&mut a, &c, true);
     assert_eq!(market(&a, &c).boost, Uint128::new(100));
 
     bet(&mut a, &c, ALICE, true, 100).unwrap();
@@ -718,6 +718,81 @@ fn boost_joins_the_losing_pot() {
     )
     .unwrap();
     assert_eq!(balance(&a, ALICE), a0 + 100 + 180);
+}
+
+#[test]
+fn only_promoted_markets_get_the_boost() {
+    let mut a = app();
+    let c = setup(&mut a);
+    a.execute_contract(
+        Addr::unchecked(ADMIN),
+        c.clone(),
+        &ExecuteMsg::FundBoost {},
+        &coins(1_000, DENOM),
+    )
+    .unwrap();
+    create(&mut a, &c, false);
+
+    assert_eq!(market(&a, &c).boost, Uint128::zero(), "без продвижения доплаты нет");
+    let boost: BoostResponse = a
+        .wrap()
+        .query_wasm_smart(c.clone(), &QueryMsg::Boost {})
+        .unwrap();
+    assert_eq!(boost.fund, Uint128::new(1_000), "фонд не тронут");
+}
+
+#[test]
+fn farming_the_boost_stays_unprofitable() {
+    let mut a = app();
+    let c = setup(&mut a);
+    a.execute_contract(
+        Addr::unchecked(ADMIN),
+        c.clone(),
+        &ExecuteMsg::FundBoost {},
+        &coins(1_000, DENOM),
+    )
+    .unwrap();
+
+    // Создатель продвигает свой рынок ради доплаты и в одиночку ставит на
+    // очевидную сторону: вторая сторона пуста, проигравший банк - одна доплата.
+    let start = balance(&a, CREATOR);
+    create(&mut a, &c, true);
+    bet(&mut a, &c, CREATOR, true, 10).unwrap();
+
+    advance(&mut a, 1_000 + CUTOFF + 2);
+    a.execute_contract(
+        Addr::unchecked(RESOLVER),
+        c.clone(),
+        &ExecuteMsg::Propose {
+            market_id: 1,
+            outcome: true,
+            reading: "above".into(),
+        },
+        &[],
+    )
+    .unwrap();
+    advance(&mut a, CHALLENGE + 1);
+    a.execute_contract(
+        Addr::unchecked(ALICE),
+        c.clone(),
+        &ExecuteMsg::Settle { market_id: 1 },
+        &[],
+    )
+    .unwrap();
+    a.execute_contract(
+        Addr::unchecked(CREATOR),
+        c.clone(),
+        &ExecuteMsg::Claim { market_id: 1 },
+        &[],
+    )
+    .unwrap();
+
+    // Отдал: залог 50, продвижение 200, ставка 10. Вернулось: залог 50,
+    // доля создателя 3 (3% от 100), ставка 10 и 90% доплаты 90.
+    // Итог -107: продвижение дороже доплаты.
+    let end = balance(&a, CREATOR);
+    assert!(end < start, "накрутка доплаты не должна окупаться");
+    assert_eq!(start - end, 107);
 }
 
 // ── конфигурация ────────────────────────────────────────────────────────────

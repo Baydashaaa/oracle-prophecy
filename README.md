@@ -106,9 +106,12 @@ only lost if the market has to be voided because the criterion turned out to be
 unverifiable - write a clear question and creation is free. Promotion is a
 separate, non-refundable fee.
 
-The **boost fund** pays a fixed top-up into new markets, capped per week. It is
-added to the pot and goes to the winners whichever side wins: the protocol
-sponsors activity, it never takes a position.
+The **boost fund** pays a fixed top-up into new promoted markets, capped per
+week. It is added to the pot and goes to the winners whichever side wins: the
+protocol sponsors activity, it never takes a position. Only promoted markets
+get it: otherwise a creator could predict alone on the obvious side of a fresh
+market and collect the top-up, since the empty side's pot would be the top-up
+itself. Promotion costs more than the top-up, so that stays unprofitable.
 
 Note on transfers: Terra Classic applies a burn tax to bank sends, so a payout
 arrives slightly smaller than the figure the contract computed.
@@ -175,7 +178,7 @@ docker run --rm -v "$(pwd)":/code \
 Compare `artifacts/checksums.txt` with what the chain reports for the code id.
 
 ```bash
-cargo test   # 40 tests: economics to the last unit, solvency, disputes, migration
+cargo test   # 42 tests: economics to the last unit, solvency, disputes, migration
 ```
 
 ## Deployments

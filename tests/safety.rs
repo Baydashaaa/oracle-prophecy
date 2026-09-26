@@ -23,6 +23,7 @@ const BOB: &str = "bob";
 const CAROL: &str = "carol";
 
 const BOND: u128 = 50;
+const PROMO: u128 = 200;
 const CUTOFF: u64 = 86_400;
 const CHALLENGE: u64 = 3_600;
 const PROTOCOL_BPS: u128 = 500;
@@ -59,7 +60,7 @@ fn setup(app: &mut App) -> Addr {
             creator_bps: CREATOR_BPS as u64,
             boost_bps: BOOST_BPS as u64,
             creation_bond: Uint128::new(BOND),
-            promo_fee: Uint128::new(200),
+            promo_fee: Uint128::new(PROMO),
             min_bet: Uint128::new(10),
             max_bet: Uint128::new(1_000),
             boost_amount: Uint128::new(100),
@@ -102,6 +103,12 @@ fn advance(app: &mut App, secs: u64) {
 }
 
 fn create(app: &mut App, c: &Addr) {
+    create_as(app, c, false);
+}
+
+/// Доплату получают только продвигаемые рынки, поэтому тестам доплаты
+/// нужен рынок с продвижением.
+fn create_as(app: &mut App, c: &Addr, promoted: bool) {
     let close = now(app) + 1_000;
     app.execute_contract(
         Addr::unchecked(CREATOR),
@@ -112,9 +119,9 @@ fn create(app: &mut App, c: &Addr) {
             spec: spec(),
             bets_close_at: close,
             resolve_after: close + CUTOFF + 1,
-            promoted: false,
+            promoted,
         },
-        &coins(BOND, DENOM),
+        &coins(if promoted { BOND + PROMO } else { BOND }, DENOM),
     )
     .unwrap();
 }
@@ -410,7 +417,7 @@ fn a_voided_market_returns_its_boost_to_the_fund() {
         &coins(500, DENOM),
     )
     .unwrap();
-    create(&mut a, &c);
+    create_as(&mut a, &c, true);
     assert_eq!(market(&a, &c).boost, Uint128::new(100));
 
     let fund_before: BoostResponse = a

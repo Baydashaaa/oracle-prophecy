@@ -244,7 +244,7 @@ fn exec_create(
     } else {
         (week_start, used)
     };
-    let boost = if used < cfg.boost_per_week && fund >= cfg.boost_amount && promoted_or_any(promoted)
+    let boost = if used < cfg.boost_per_week && fund >= cfg.boost_amount && boost_eligible(promoted)
     {
         fund -= cfg.boost_amount;
         BOOST_WEEK.save(deps.storage, &(week_start, used + 1))?;
@@ -304,10 +304,13 @@ fn exec_create(
     Ok(res)
 }
 
-/// Доплату получают все рынки, не только продвигаемые. Отдельная функция -
-/// чтобы правило было видно, а не растворялось в условии.
-fn promoted_or_any(_promoted: bool) -> bool {
-    true
+/// Доплату получают только продвигаемые рынки. Если давать её всем,
+/// создатель с одним предсказанием на очевидную сторону забирает доплату
+/// себе: при пустой второй стороне проигравший банк - это одна доплата.
+/// Продвижение стоит дороже доплаты, и такая накрутка убыточна. Отдельная
+/// функция - чтобы правило было видно, а не растворялось в условии.
+fn boost_eligible(promoted: bool) -> bool {
+    promoted
 }
 
 fn exec_bet(
