@@ -12,9 +12,12 @@ use crate::msg::{
     PositionResponse, QueryMsg,
 };
 use crate::state::{
-    side_key, Bet, Config, Market, Spec, Status, BETS, BOOST_FUND, BOOST_WEEK, CONFIG, MARKETS,
-    NEXT_ID,
+    side_key, Bet, Config, Market, Rules, Spec, Status, BETS, BOOST_FUND, BOOST_WEEK, CONFIG,
+    MARKETS, NEXT_ID,
 };
+
+const CONTRACT_NAME: &str = "crates.io:oracle-prophecy";
+const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const WEEK: u64 = 604_800;
 const MAX_LIMIT: u32 = 50;
@@ -24,6 +27,30 @@ const MAX_TEXT: usize = 500;
 /// Меньше суток нельзя: иначе `Expire` мог бы аннулировать рынок, пока
 /// резолвер просто не успел объявить исход.
 const MIN_GRACE: u64 = 86_400;
+/// Окно оспаривания не может быть короче часа. Ноль отключал бы спор
+/// целиком (аудит MKT-03).
+const MIN_CHALLENGE: u64 = 3_600;
+
+// ── допустимые значения спецификации (аудит MKT-01) ─────────────────────────
+//
+// Эти поля показываются на сайте и читаются керпером. Раньше контракт
+// принимал любые строки, и сравнение вида `<img onerror=...>` доходило до
+// страницы. Теперь неизвестное значение отклоняется при создании.
+
+const METRICS: [&str; 6] = [
+    "oracle_rate",
+    "total_supply",
+    "staking_ratio",
+    "community_pool",
+    "validator_power",
+    "proposal_passed",
+];
+const COMPARATORS: [&str; 4] = ["gt", "gte", "lt", "lte"];
+const UNITS: [&str; 3] = ["uluna", "percent", "rate"];
+const MAX_CATEGORY: usize = 24;
+const MAX_PARAM: usize = 128;
+const MAX_THRESHOLD: usize = 40;
+const MAX_CRITERION: usize = 1_000;
 
 // ── instantiate ─────────────────────────────────────────────────────────────
 
@@ -67,6 +94,7 @@ pub fn instantiate(
     check_fees(&cfg)?;
     check_disputes(&cfg)?;
 
+    cw2::set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
     CONFIG.save(deps.storage, &cfg)?;
     NEXT_ID.save(deps.storage, &1u64)?;
     BOOST_FUND.save(deps.storage, &Uint128::zero())?;
@@ -105,7 +133,100 @@ fn check_disputes(cfg: &Config) -> Result<(), ContractError> {
     if cfg.resolve_grace_secs < MIN_GRACE {
         return bad("resolve_grace_secs");
     }
+    if cfg.challenge_secs < MIN_CHALLENGE {
+        return bad("challenge_secs");
+    }
     Ok(())
+}
+
+/// Правила спора из текущего конфига - то, что получит новый рынок.
+fn rules_from(cfg: &Config) -> Rules {
+    Rules {
+        challenge_secs: cfg.challenge_secs,
+        challenge_bond: cfg.challenge_bond,
+        arbiter: arbiter(cfg),
+        arbiter_secs: cfg.arbiter_secs,
+        resolve_grace_secs: cfg.resolve_grace_secs,
+    }
+}
+
+/// Правила, по которым живёт рынок. Конфиг используется только для
+/// рынков без своей копии, то есть созданных до 0.2.4.
+fn rules_of(cfg: &Config, m: &Market) -> Rules {
+    m.rules.clone().unwrap_or_else(|| rules_from(cfg))
+}
+
+fn bad_spec(what: &str) -> Result<(), ContractError> {
+    Err(ContractError::BadSpec {
+        what: what.to_string(),
+    })
+}
+
+/// Строгая проверка того, что уходит в хранилище и потом на страницу.
+fn check_market(question: &str, category: &str, spec: &Spec) -> Result<(), ContractError> {
+    check_text(question)?;
+    let crit = spec.criterion.trim();
+    if crit.is_empty() || spec.criterion.len() > MAX_CRITERION {
+        return bad_spec("criterion must be 1-1000 characters");
+    }
+
+    if category.is_empty()
+        || category.len() > MAX_CATEGORY
+        || !category
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+    {
+        return bad_spec("category must be 1-24 characters: a-z, 0-9, _ or -");
+    }
+
+    if let Some(mt) = &spec.metric {
+        if !METRICS.contains(&mt.as_str()) {
+            return bad_spec("unknown metric");
+        }
+    }
+    if let Some(c) = &spec.comparator {
+        if !COMPARATORS.contains(&c.as_str()) {
+            return bad_spec("comparator must be gt, gte, lt or lte");
+        }
+    }
+    if let Some(u) = &spec.unit {
+        if !UNITS.contains(&u.as_str()) {
+            return bad_spec("unit must be uluna, percent or rate");
+        }
+    }
+    if let Some(t) = &spec.threshold {
+        if !is_decimal(t) {
+            return bad_spec("threshold must be a plain non-negative number");
+        }
+    }
+    if let Some(p) = &spec.param {
+        if p.is_empty()
+            || p.len() > MAX_PARAM
+            || !p.bytes().all(|b| {
+                b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b':' | b';' | b'=' | b',' | b'/' | b'-')
+            })
+        {
+            return bad_spec("param has characters that are not allowed");
+        }
+    }
+    Ok(())
+}
+
+/// "123", "0.00005016": цифры и не больше одной точки между ними.
+fn is_decimal(t: &str) -> bool {
+    if t.is_empty() || t.len() > MAX_THRESHOLD {
+        return false;
+    }
+    let mut parts = t.split('.');
+    let int = parts.next().unwrap_or("");
+    let frac = parts.next();
+    if parts.next().is_some() || int.is_empty() || !int.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    match frac {
+        None => true,
+        Some(f) => !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()),
+    }
 }
 
 /// Кто решает споры. Пока арбитр не назначен - admin.
@@ -204,6 +325,7 @@ fn exec_create(
     if question.trim().is_empty() || spec.criterion.trim().is_empty() {
         return Err(ContractError::EmptySpec {});
     }
+    check_market(&question, &category, &spec)?;
 
     // Показатель, который проверяет цепочка, обязан назвать момент и порог.
     if spec.metric.is_some() {
@@ -286,6 +408,7 @@ fn exec_create(
         ruling: None,
         void_reason: None,
         bad_spec: false,
+        rules: Some(rules_from(&cfg)),
     };
     MARKETS.save(deps.storage, id, &market)?;
 
@@ -392,6 +515,7 @@ fn exec_propose(
     if info.sender != cfg.resolver {
         return Err(ContractError::Unauthorized {});
     }
+    check_text(&reading)?;
     let mut m = MARKETS
         .may_load(deps.storage, market_id)?
         .ok_or(ContractError::NoMarket { id: market_id })?;
@@ -424,25 +548,26 @@ fn exec_challenge(
     reading: String,
 ) -> Result<Response, ContractError> {
     let cfg = CONFIG.load(deps.storage)?;
-    // Резолвер не оспаривает сам себя, арбитр не судит собственный спор.
-    if info.sender == cfg.resolver || info.sender == arbiter(&cfg) {
-        return Err(ContractError::ChallengerConflict {});
-    }
     check_text(&reading)?;
     let mut m = MARKETS
         .may_load(deps.storage, market_id)?
         .ok_or(ContractError::NoMarket { id: market_id })?;
+    let r = rules_of(&cfg, &m);
+    // Резолвер не оспаривает сам себя, арбитр не судит собственный спор.
+    if info.sender == cfg.resolver || info.sender == r.arbiter {
+        return Err(ContractError::ChallengerConflict {});
+    }
     if m.status != Status::Proposed {
         return Err(ContractError::NotProposed {});
     }
     let now = env.block.time.seconds();
-    if now >= m.proposed_at.unwrap_or_default() + cfg.challenge_secs {
+    if now >= m.proposed_at.unwrap_or_default() + r.challenge_secs {
         return Err(ContractError::ChallengeClosed {});
     }
     let paid = sent(&info, &cfg.denom);
-    if paid != cfg.challenge_bond {
+    if paid != r.challenge_bond {
         return Err(ContractError::WrongPayment {
-            expected: cfg.challenge_bond,
+            expected: r.challenge_bond,
             denom: cfg.denom,
         });
     }
@@ -473,19 +598,20 @@ fn exec_rule(
     ruling: String,
 ) -> Result<Response, ContractError> {
     let cfg = CONFIG.load(deps.storage)?;
-    if info.sender != arbiter(&cfg) {
-        return Err(ContractError::Unauthorized {});
-    }
     check_text(&ruling)?;
     let mut m = MARKETS
         .may_load(deps.storage, market_id)?
         .ok_or(ContractError::NoMarket { id: market_id })?;
+    let r = rules_of(&cfg, &m);
+    if info.sender != r.arbiter {
+        return Err(ContractError::Unauthorized {});
+    }
     if m.status != Status::Disputed {
         return Err(ContractError::NotDisputed {});
     }
     // Опоздавшее решение не принимается: после окна рынок уходит в void
     // через Expire, и арбитр не может этого перехватить.
-    if env.block.time.seconds() >= m.disputed_at.unwrap_or_default() + cfg.arbiter_secs {
+    if env.block.time.seconds() >= m.disputed_at.unwrap_or_default() + r.arbiter_secs {
         return Err(ContractError::RulingTooLate {});
     }
     m.ruling = Some(ruling);
@@ -523,11 +649,12 @@ fn exec_expire(deps: DepsMut, env: Env, market_id: u64) -> Result<Response, Cont
     let m = MARKETS
         .may_load(deps.storage, market_id)?
         .ok_or(ContractError::NoMarket { id: market_id })?;
+    let r = rules_of(&cfg, &m);
     let now = env.block.time.seconds();
 
     match m.status {
         Status::Open | Status::Locked => {
-            if now < m.resolve_after + cfg.resolve_grace_secs {
+            if now < m.resolve_after + r.resolve_grace_secs {
                 return Err(ContractError::NotExpired {});
             }
             void_market(
@@ -538,7 +665,7 @@ fn exec_expire(deps: DepsMut, env: Env, market_id: u64) -> Result<Response, Cont
             )
         }
         Status::Disputed => {
-            if now < m.disputed_at.unwrap_or_default() + cfg.arbiter_secs {
+            if now < m.disputed_at.unwrap_or_default() + r.arbiter_secs {
                 return Err(ContractError::NotExpired {});
             }
             void_market(deps, m, false, "the arbiter did not rule in time".to_string())
@@ -555,7 +682,7 @@ fn exec_settle(deps: DepsMut, env: Env, market_id: u64) -> Result<Response, Cont
     if m.status != Status::Proposed {
         return Err(ContractError::NotProposed {});
     }
-    if env.block.time.seconds() < m.proposed_at.unwrap_or_default() + cfg.challenge_secs {
+    if env.block.time.seconds() < m.proposed_at.unwrap_or_default() + rules_of(&cfg, &m).challenge_secs {
         return Err(ContractError::ChallengeOpen {});
     }
     settle_market(deps, m, None)
@@ -661,11 +788,21 @@ fn exec_void(
     if info.sender != cfg.admin && info.sender != cfg.resolver {
         return Err(ContractError::Unauthorized {});
     }
+    check_text(&reason)?;
     let m = MARKETS
         .may_load(deps.storage, market_id)?
         .ok_or(ContractError::NoMarket { id: market_id })?;
-    if matches!(m.status, Status::Settled | Status::Void) {
-        return Err(ContractError::AlreadyClosed {});
+    // Кто и когда может аннулировать (аудит MKT-03):
+    // - до объявления исхода: админ или резолвер (непроверяемая формулировка,
+    //   отказ источника);
+    // - после объявления: только админ. Резолвер не отменяет собственное
+    //   объявление, чтобы уйти от оспаривания;
+    // - в споре: никто. Решает арбитр, а его молчание ведёт к Expire.
+    match m.status {
+        Status::Settled | Status::Void => return Err(ContractError::AlreadyClosed {}),
+        Status::Disputed => return Err(ContractError::VoidDisputed {}),
+        Status::Proposed if info.sender != cfg.admin => return Err(ContractError::Unauthorized {}),
+        _ => {}
     }
     void_market(deps, m, bad_spec, reason)
 }
@@ -1026,7 +1163,28 @@ pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> Result<Response, Co
     if let Some(v) = msg.resolve_grace_secs {
         cfg.resolve_grace_secs = v;
     }
+    if let Some(v) = msg.challenge_secs {
+        cfg.challenge_secs = v;
+    }
     check_disputes(&cfg)?;
     CONFIG.save(deps.storage, &cfg)?;
-    Ok(Response::new().add_attribute("action", "migrate"))
+
+    // 0.2.4: каждому живому рынку - своя копия правил спора, снятая с
+    // конфига сейчас. После этого правка конфига их уже не задевает.
+    let live: Vec<Market> = MARKETS
+        .range(deps.storage, None, None, Order::Ascending)
+        .filter_map(|item| item.ok().map(|(_, m)| m))
+        .filter(|m| m.rules.is_none() && !matches!(m.status, Status::Settled | Status::Void))
+        .collect();
+    let frozen = live.len();
+    for mut m in live {
+        m.rules = Some(rules_from(&cfg));
+        MARKETS.save(deps.storage, m.id, &m)?;
+    }
+
+    cw2::set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
+    Ok(Response::new()
+        .add_attribute("action", "migrate")
+        .add_attribute("version", CONTRACT_VERSION)
+        .add_attribute("markets_frozen", frozen.to_string()))
 }

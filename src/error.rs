@@ -99,4 +99,10 @@ pub enum ContractError {
     /// void, а нулевой grace позволил бы аннулировать рынок раньше резолвера.
     #[error("Dispute settings are missing or too small: {what}")]
     BadDisputeConfig { what: String },
+
+    #[error("Invalid market spec: {what}")]
+    BadSpec { what: String },
+
+    #[error("A disputed market is decided by the arbiter or expires, it cannot be voided directly")]
+    VoidDisputed {},
 }

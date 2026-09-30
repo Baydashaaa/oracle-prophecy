@@ -191,6 +191,10 @@ pub struct BoostResponse {
 /// пропустит нули, и миграция без них откатится целиком.
 #[cw_serde]
 pub struct MigrateMsg {
+    /// 0.2.4: нижняя граница окна оспаривания стала обязательной. Поле
+    /// позволяет поднять окно в той же миграции, если оно ниже часа.
+    #[serde(default)]
+    pub challenge_secs: Option<u64>,
     pub arbiter: Option<String>,
     pub challenge_bond: Option<Uint128>,
     pub arbiter_secs: Option<u64>,

@@ -546,6 +546,7 @@ fn migrate_sets_the_dispute_settings() {
         Addr::unchecked(ADMIN),
         c.clone(),
         &MigrateMsg {
+            challenge_secs: None,
             arbiter: Some("multisig".into()),
             challenge_bond: Some(Uint128::new(200_000_000_000)),
             arbiter_secs: Some(259_200),
@@ -588,6 +589,8 @@ fn storage_written_by_the_old_code_still_reads() {
     assert_eq!(m.spec.unit, None);
     assert_eq!(m.void_reason, None);
     assert_eq!(m.challenge_bond, Uint128::zero());
+    // 0.2.4: у старого рынка нет своих правил, их проставляет миграция.
+    assert_eq!(m.rules, None);
 }
 
 // ── имя сообщения ───────────────────────────────────────────────────────────
