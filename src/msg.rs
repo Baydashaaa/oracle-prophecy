@@ -150,6 +150,9 @@ pub enum QueryMsg {
         status: Option<Status>,
         start_after: Option<u64>,
         limit: Option<u32>,
+        /// С 0.2.5: от новых к старым.
+        #[serde(default)]
+        descending: Option<bool>,
     },
 
     /// Позиция кошелька на рынке: сколько поставлено с каждой стороны и

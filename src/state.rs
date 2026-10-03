@@ -252,6 +252,35 @@ pub const BOOST_FUND: Item<Uint128> = Item::new("boost_fund");
 pub const BOOST_WEEK: Item<(u64, u64)> = Item::new("boost_week");
 
 pub const MARKETS: Map<u64, Market> = Map::new("markets");
+
+/// Индекс по статусу: (статус, id) -> (). С 0.2.5 (аудит MKT-06). Запрос
+/// рынков с фильтром по статусу раньше перебирал всю историю, пока не
+/// наберёт `limit` подходящих; теперь он идёт только по своему статусу.
+/// Обновляется в `save_market` при каждой записи рынка.
+pub const BY_STATUS: Map<(&str, u64), ()> = Map::new("by_status");
+
+pub fn status_key(s: &Status) -> &'static str {
+    match s {
+        Status::Open => "open",
+        Status::Locked => "locked",
+        Status::Proposed => "proposed",
+        Status::Disputed => "disputed",
+        Status::Settled => "settled",
+        Status::Void => "void",
+    }
+}
+
+/// Единственный способ записать рынок: держит индекс по статусу в согласии
+/// с самим рынком.
+pub fn save_market(storage: &mut dyn cosmwasm_std::Storage, m: &Market) -> cosmwasm_std::StdResult<()> {
+    if let Some(prev) = MARKETS.may_load(storage, m.id)? {
+        if prev.status != m.status {
+            BY_STATUS.remove(storage, (status_key(&prev.status), m.id));
+        }
+    }
+    BY_STATUS.save(storage, (status_key(&m.status), m.id), &())?;
+    MARKETS.save(storage, m.id, m)
+}
 /// (id рынка, сторона, кошелёк) -> ставка. Сторона отдельным ключом:
 /// один кошелёк может стоять на обеих, и это не запрещено - он просто
 /// теряет комиссию с проигравшей половины.

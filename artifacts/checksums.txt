@@ -1,1 +1,1 @@
-78dbec9a0589420d9bfdc68d4504547526cb2f1049a3043fc6e6ebf6ed771862  oracle_prophecy.wasm
+7f8703298213ebca643b9961dfbe4eaaa8366e241cb0039fc02b1c804e5eaed3  oracle_prophecy.wasm

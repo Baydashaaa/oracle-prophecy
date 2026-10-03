@@ -12,8 +12,8 @@ use crate::msg::{
     PositionResponse, QueryMsg,
 };
 use crate::state::{
-    side_key, Bet, Config, Market, Rules, Spec, Status, BETS, BOOST_FUND, BOOST_WEEK, CONFIG,
-    MARKETS, NEXT_ID,
+    save_market, side_key, status_key, Bet, Config, Market, Rules, Spec, Status, BETS, BOOST_FUND,
+    BOOST_WEEK, BY_STATUS, CONFIG, MARKETS, NEXT_ID,
 };
 
 const CONTRACT_NAME: &str = "crates.io:oracle-prophecy";
@@ -410,7 +410,7 @@ fn exec_create(
         bad_spec: false,
         rules: Some(rules_from(&cfg)),
     };
-    MARKETS.save(deps.storage, id, &market)?;
+    save_market(deps.storage, &market)?;
 
     // Плата за продвижение невозвратна и уходит сразу: держать её на
     // контракте значило бы смешивать её с деньгами участников.
@@ -494,7 +494,7 @@ fn exec_bet(
             claimed: false,
         },
     )?;
-    MARKETS.save(deps.storage, market_id, &m)?;
+    save_market(deps.storage, &m)?;
 
     Ok(Response::new()
         .add_attribute("action", "bet")
@@ -531,7 +531,7 @@ fn exec_propose(
     m.outcome = Some(outcome);
     m.reading = Some(reading.clone());
     m.proposed_at = Some(now);
-    MARKETS.save(deps.storage, market_id, &m)?;
+    save_market(deps.storage, &m)?;
 
     Ok(Response::new()
         .add_attribute("action", "propose")
@@ -579,7 +579,7 @@ fn exec_challenge(
     m.challenger = Some(info.sender.clone());
     m.challenge_reading = Some(reading.clone());
     m.challenge_bond = paid;
-    MARKETS.save(deps.storage, market_id, &m)?;
+    save_market(deps.storage, &m)?;
 
     Ok(Response::new()
         .add_attribute("action", "challenge")
@@ -763,7 +763,7 @@ fn settle_market(
     }
 
     m.status = Status::Settled;
-    MARKETS.save(deps.storage, market_id, &m)?;
+    save_market(deps.storage, &m)?;
 
     Ok(Response::new()
         .add_messages(msgs)
@@ -855,7 +855,7 @@ fn void_market(
     m.void_reason = Some(reason.clone());
     m.bad_spec = bad_spec;
     let id = m.id;
-    MARKETS.save(deps.storage, id, &m)?;
+    save_market(deps.storage, &m)?;
 
     Ok(Response::new()
         .add_messages(msgs)
@@ -1064,7 +1064,14 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
             status,
             start_after,
             limit,
-        } => to_json_binary(&query_markets(deps, status, start_after, limit)?),
+            descending,
+        } => to_json_binary(&query_markets(
+            deps,
+            status,
+            start_after,
+            limit,
+            descending.unwrap_or(false),
+        )?),
         QueryMsg::Position { market_id, address } => {
             to_json_binary(&query_position(deps, market_id, address)?)
         }
@@ -1087,20 +1094,41 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     }
 }
 
+/// Страница рынков. С фильтром по статусу идёт по индексу `BY_STATUS`, так
+/// что число просмотренных записей не больше `limit` при любой истории
+/// (аудит MKT-06). `descending` - от новых к старым, `start_after` тогда
+/// означает "старше этого id".
 fn query_markets(
     deps: Deps,
     status: Option<Status>,
     start_after: Option<u64>,
     limit: Option<u32>,
+    descending: bool,
 ) -> StdResult<MarketsResponse> {
     let limit = limit.unwrap_or(20).min(MAX_LIMIT) as usize;
-    let start = start_after.map(Bound::exclusive);
-    let markets = MARKETS
-        .range(deps.storage, start, None, Order::Ascending)
-        .filter_map(|item| item.ok().map(|(_, m)| m))
-        .filter(|m| status.as_ref().map(|s| &m.status == s).unwrap_or(true))
-        .take(limit)
-        .collect();
+    let cursor = start_after.map(Bound::exclusive);
+    let (min, max, order) = if descending {
+        (None, cursor, Order::Descending)
+    } else {
+        (cursor, None, Order::Ascending)
+    };
+    let markets = match status {
+        Some(s) => {
+            let ids: Vec<u64> = BY_STATUS
+                .prefix(status_key(&s))
+                .keys(deps.storage, min, max, order)
+                .take(limit)
+                .collect::<StdResult<_>>()?;
+            ids.into_iter()
+                .map(|id| MARKETS.load(deps.storage, id))
+                .collect::<StdResult<_>>()?
+        }
+        None => MARKETS
+            .range(deps.storage, min, max, order)
+            .take(limit)
+            .map(|item| item.map(|(_, m)| m))
+            .collect::<StdResult<_>>()?,
+    };
     Ok(MarketsResponse { markets })
 }
 
@@ -1179,12 +1207,26 @@ pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> Result<Response, Co
     let frozen = live.len();
     for mut m in live {
         m.rules = Some(rules_from(&cfg));
-        MARKETS.save(deps.storage, m.id, &m)?;
+        save_market(deps.storage, &m)?;
+    }
+
+    // 0.2.5: индекс по статусу для всех рынков, записанных до него.
+    let all: Vec<Market> = MARKETS
+        .range(deps.storage, None, None, Order::Ascending)
+        .map(|item| item.map(|(_, m)| m))
+        .collect::<StdResult<_>>()?;
+    let mut indexed = 0u64;
+    for m in &all {
+        if !BY_STATUS.has(deps.storage, (status_key(&m.status), m.id)) {
+            BY_STATUS.save(deps.storage, (status_key(&m.status), m.id), &())?;
+            indexed += 1;
+        }
     }
 
     cw2::set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
     Ok(Response::new()
         .add_attribute("action", "migrate")
         .add_attribute("version", CONTRACT_VERSION)
-        .add_attribute("markets_frozen", frozen.to_string()))
+        .add_attribute("markets_frozen", frozen.to_string())
+        .add_attribute("markets_indexed", indexed.to_string()))
 }
