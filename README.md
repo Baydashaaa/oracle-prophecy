@@ -185,9 +185,13 @@ cargo test   # 43 tests: economics to the last unit, solvency, disputes, migrati
 
 | What | Value |
 |---|---|
-| code_id | 11643 |
-| checksum | `2060d6c7be53693192fa517b33420677d14d494a14077b024f2b84b33aa553ab` |
-| test instance | `terra1w3f09yqcna09hgc562azuze8x4qdvnzanz429cwycm84m8lygffskwcu58` |
+| mainnet contract | `terra1rz70ljfnfpppeg9tksszca23x8w97qrdql0z7yqn4ewf6aftc45qsrgge2` |
+| mainnet code_id (current, 0.2.5) | 11710 |
+| checksum (0.2.5) | `7f8703298213ebca643b9961dfbe4eaaa8366e241cb0039fc02b1c804e5eaed3` |
+| migration to 11710 | 3 Oct 2026, block 30,672,093, council proposal #2, tx `BC6D7D5D65E7A3D49695A23DC03A41DEC30CFE2BFE1F1D873E6E891930183BE1` |
+| earlier mainnet codes | 11680 (0.2.3, instantiate), 11684 (0.2.4) |
+| admin | council multisig `terra1u5awyahn8xp5kzjf02vsnjnjqzasem4k04tu2yuhj0tsjtqx6pzs8h0rvx` (2 of 3) |
+| early test build | code 11643, checksum `2060d6c7be53693192fa517b33420677d14d494a14077b024f2b84b33aa553ab`, instance `terra1w3f09yqcna09hgc562azuze8x4qdvnzanz429cwycm84m8lygffskwcu58` |
 
 ## License
 
